@@ -11,18 +11,18 @@ namespace GaussianSplatting.Editor.Utils
 {
     public static class PLYFileReader
     {
-        public static void ReadFileHeader(string filePath, out int vertexCount, out int vertexStride, out List<(string, ElementType)> attrs)
+        public static void ReadFileHeader(string filePath, out int vertexCount, out int vertexStride, out List<string> attrNames)
         {
             vertexCount = 0;
             vertexStride = 0;
-            attrs = new List<(string, ElementType)>();
+            attrNames = new List<string>();
             if (!File.Exists(filePath))
                 return;
             using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read);
-            ReadHeaderImpl(filePath, out vertexCount, out vertexStride, out attrs, fs);
+            ReadHeaderImpl(filePath, out vertexCount, out vertexStride, out attrNames, fs);
         }
 
-        static void ReadHeaderImpl(string filePath, out int vertexCount, out int vertexStride, out List<(string, ElementType)> attrs, FileStream fs)
+        static void ReadHeaderImpl(string filePath, out int vertexCount, out int vertexStride, out List<string> attrNames, FileStream fs)
         {
             // C# arrays and NativeArrays make it hard to have a "byte" array larger than 2GB :/
             if (fs.Length >= 2 * 1024 * 1024 * 1024L)
@@ -31,17 +31,14 @@ namespace GaussianSplatting.Editor.Utils
             // read header
             vertexCount = 0;
             vertexStride = 0;
-            attrs = new List<(string, ElementType)>();
+            attrNames = new List<string>();
             const int kMaxHeaderLines = 9000;
-            bool got_binary_le = false;
             for (int lineIdx = 0; lineIdx < kMaxHeaderLines; ++lineIdx)
             {
                 var line = ReadLine(fs);
                 if (line == "end_header" || line.Length == 0)
                     break;
                 var tokens = line.Split(' ');
-                if (tokens.Length == 3 && tokens[0] == "format" && tokens[1] == "binary_little_endian" && tokens[2] == "1.0")
-                    got_binary_le = true;
                 if (tokens.Length == 3 && tokens[0] == "element" && tokens[1] == "vertex")
                     vertexCount = int.Parse(tokens[2]);
                 if (tokens.Length == 3 && tokens[0] == "property")
@@ -51,23 +48,20 @@ namespace GaussianSplatting.Editor.Utils
                         "float" => ElementType.Float,
                         "double" => ElementType.Double,
                         "uchar" => ElementType.UChar,
+                        "int" => ElementType.Int,
                         _ => ElementType.None
                     };
                     vertexStride += TypeToSize(type);
-                    attrs.Add((tokens[2], type));
+                    attrNames.Add(tokens[2]);
                 }
             }
-
-            if (!got_binary_le)
-            {
-                throw new IOException($"PLY {filePath} not supported: needs to be binary, little endian PLY format");
-            }
+            UnityEngine.Debug.Log($"PLY {filePath} vtx {vertexCount} stride {vertexStride} attrs #{attrNames.Count} {string.Join(',', attrNames)}");
         }
 
-        public static void ReadFile(string filePath, out int vertexCount, out int vertexStride, out List<(string, ElementType)> attrs, out NativeArray<byte> vertices)
+        public static void ReadFile(string filePath, out int vertexCount, out int vertexStride, out List<string> attrNames, out NativeArray<byte> vertices)
         {
             using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read);
-            ReadHeaderImpl(filePath, out vertexCount, out vertexStride, out attrs, fs);
+            ReadHeaderImpl(filePath, out vertexCount, out vertexStride, out attrNames, fs);
 
             vertices = new NativeArray<byte>(vertexCount * vertexStride, Allocator.Persistent);
             var readBytes = fs.Read(vertices);
@@ -75,15 +69,16 @@ namespace GaussianSplatting.Editor.Utils
                 throw new IOException($"PLY {filePath} read error, expected {vertices.Length} data bytes got {readBytes}");
         }
 
-        public enum ElementType
+        enum ElementType
         {
             None,
             Float,
             Double,
-            UChar
+            UChar,
+            Int
         }
 
-        public static int TypeToSize(ElementType t)
+        static int TypeToSize(ElementType t)
         {
             return t switch
             {
@@ -91,6 +86,7 @@ namespace GaussianSplatting.Editor.Utils
                 ElementType.Float => 4,
                 ElementType.Double => 8,
                 ElementType.UChar => 1,
+                ElementType.Int => 4,
                 _ => throw new ArgumentOutOfRangeException(nameof(t), t, null)
             };
         }

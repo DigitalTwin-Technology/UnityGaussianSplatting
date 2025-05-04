@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using GaussianSplatting.Runtime;
 using Unity.Collections.LowLevel.Unsafe;
@@ -21,11 +22,11 @@ namespace GaussianSplatting.Editor
         const string kPrefExportBake = "nesnausk.GaussianSplatting.ExportBakeTransform";
 
         SerializedProperty m_PropAsset;
-        SerializedProperty m_PropRenderOrder;
         SerializedProperty m_PropSplatScale;
         SerializedProperty m_PropOpacityScale;
         SerializedProperty m_PropSHOrder;
         SerializedProperty m_PropSHOnly;
+        SerializedProperty m_CenterEyeOnly;
         SerializedProperty m_PropSortNthFrame;
         SerializedProperty m_PropRenderMode;
         SerializedProperty m_PropPointDisplaySize;
@@ -34,7 +35,10 @@ namespace GaussianSplatting.Editor
         SerializedProperty m_PropShaderComposite;
         SerializedProperty m_PropShaderDebugPoints;
         SerializedProperty m_PropShaderDebugBoxes;
-        SerializedProperty m_PropCSSplatUtilities;
+        SerializedProperty m_PropCSSplatUtilities_deviceRadixSort;
+        SerializedProperty m_PropCSSplatUtilities_fidelityFxSort;
+        SerializedProperty m_gpuSortType;
+        SerializedProperty m_PropOptimizeForQuest;
 
         bool m_ResourcesExpanded = false;
         int m_CameraIndex = 0;
@@ -61,12 +65,12 @@ namespace GaussianSplatting.Editor
             m_ExportBakeTransform = EditorPrefs.GetBool(kPrefExportBake, false);
 
             m_PropAsset = serializedObject.FindProperty("m_Asset");
-            m_PropRenderOrder = serializedObject.FindProperty("m_RenderOrder");
             m_PropSplatScale = serializedObject.FindProperty("m_SplatScale");
             m_PropOpacityScale = serializedObject.FindProperty("m_OpacityScale");
             m_PropSHOrder = serializedObject.FindProperty("m_SHOrder");
             m_PropSHOnly = serializedObject.FindProperty("m_SHOnly");
             m_PropSortNthFrame = serializedObject.FindProperty("m_SortNthFrame");
+            m_CenterEyeOnly = serializedObject.FindProperty("m_CenterEyeOnly");
             m_PropRenderMode = serializedObject.FindProperty("m_RenderMode");
             m_PropPointDisplaySize = serializedObject.FindProperty("m_PointDisplaySize");
             m_PropCutouts = serializedObject.FindProperty("m_Cutouts");
@@ -74,8 +78,10 @@ namespace GaussianSplatting.Editor
             m_PropShaderComposite = serializedObject.FindProperty("m_ShaderComposite");
             m_PropShaderDebugPoints = serializedObject.FindProperty("m_ShaderDebugPoints");
             m_PropShaderDebugBoxes = serializedObject.FindProperty("m_ShaderDebugBoxes");
-            m_PropCSSplatUtilities = serializedObject.FindProperty("m_CSSplatUtilities");
-
+            m_PropCSSplatUtilities_deviceRadixSort = serializedObject.FindProperty("m_CSSplatUtilities_deviceRadixSort");
+            m_PropCSSplatUtilities_fidelityFxSort = serializedObject.FindProperty("m_CSSplatUtilities_fidelityFX");
+            m_gpuSortType = serializedObject.FindProperty("m_gpuSortType");
+            m_PropOptimizeForQuest = serializedObject.FindProperty("m_OptimizeForQuest");
             s_AllEditors.Add(this);
         }
 
@@ -105,12 +111,45 @@ namespace GaussianSplatting.Editor
 
             EditorGUILayout.Space();
             GUILayout.Label("Render Options", EditorStyles.boldLabel);
-            EditorGUILayout.PropertyField(m_PropRenderOrder);
             EditorGUILayout.PropertyField(m_PropSplatScale);
             EditorGUILayout.PropertyField(m_PropOpacityScale);
             EditorGUILayout.PropertyField(m_PropSHOrder);
             EditorGUILayout.PropertyField(m_PropSHOnly);
-            EditorGUILayout.PropertyField(m_PropSortNthFrame);
+            EditorGUILayout.PropertyField(m_gpuSortType);
+            if (gs.m_gpuSortType != GpuSorting.SortType.None)
+            {
+                EditorGUILayout.PropertyField(m_PropSortNthFrame);
+                EditorGUILayout.PropertyField(m_CenterEyeOnly);
+            }
+            EditorGUILayout.PropertyField(m_PropOptimizeForQuest);
+
+            if (gs.HasValidAsset)
+            {
+                EditorGUILayout.Space();
+                GUILayout.Label("Layer Options", EditorStyles.boldLabel);
+                for (int i = 0; i < gs.asset.layerInfo.Count; i++)
+                {
+                    if (gs.asset.layerInfo.Count > gs.m_LayerActivationState.Count)
+                    {
+                        var toAdd = Enumerable.Repeat(default(int2), gs.asset.layerInfo.Count - gs.m_LayerActivationState.Count);
+                        gs.m_LayerActivationState.AddRange(toAdd);
+
+                        // On initial resize, activate first layer
+                        gs.m_LayerActivationState[0] = new int2(0, 1); 
+                        gs.UpdateRessources();
+                    }
+
+                    var layer = gs.m_LayerActivationState.ElementAtOrDefault(i);
+                    var layerActive = layer.y > 0;
+                    var check = EditorGUILayout.Toggle($"Show layer {i}", layerActive);
+                    if (check != layerActive)
+                    {
+                        gs.m_LayerActivationState[i] = new int2(i, check ? 1 : 0);
+                        gs.UpdateRessources();
+                        EditorUtility.SetDirty(gs);
+                    }
+                }
+            }
 
             EditorGUILayout.Space();
             GUILayout.Label("Debugging Tweaks", EditorStyles.boldLabel);
@@ -126,7 +165,8 @@ namespace GaussianSplatting.Editor
                 EditorGUILayout.PropertyField(m_PropShaderComposite);
                 EditorGUILayout.PropertyField(m_PropShaderDebugPoints);
                 EditorGUILayout.PropertyField(m_PropShaderDebugBoxes);
-                EditorGUILayout.PropertyField(m_PropCSSplatUtilities);
+                EditorGUILayout.PropertyField(m_PropCSSplatUtilities_deviceRadixSort);
+                EditorGUILayout.PropertyField(m_PropCSSplatUtilities_fidelityFxSort);
             }
             bool validAndEnabled = gs && gs.enabled && gs.gameObject.activeInHierarchy && gs.HasValidAsset;
             if (validAndEnabled && !gs.HasValidRenderSetup)
@@ -185,7 +225,7 @@ namespace GaussianSplatting.Editor
                 return;
             }
 
-            if (targetGs.asset.chunkData != null)
+            if (targetGs.asset.chunkDataSize > 0)
             {
                 EditorGUILayout.HelpBox($"Can't merge into {target.name} (needs to use Very High quality preset)", MessageType.Warning);
                 return;
@@ -269,7 +309,7 @@ namespace GaussianSplatting.Editor
                 ToolManager.SetActiveContext<GameObjectToolContext>();
             }
 
-            if (isToolActive && gs.asset.chunkData != null)
+            if (isToolActive && gs.asset.chunkDataSize > 0)
             {
                 EditorGUILayout.HelpBox("Splat move/rotate/scale tools need Very High splat quality preset", MessageType.Warning);
             }
@@ -398,13 +438,13 @@ namespace GaussianSplatting.Editor
             if (string.IsNullOrWhiteSpace(path))
                 return;
 
-            int kSplatSize = UnsafeUtility.SizeOf<Utils.InputSplatData>();
+            int kSplatSize = UnsafeUtility.SizeOf<GaussianSplatAssetCreator.InputSplatData>();
             using var gpuData = new GraphicsBuffer(GraphicsBuffer.Target.Structured, gs.splatCount, kSplatSize);
 
             if (!gs.EditExportData(gpuData, bakeTransform))
                 return;
 
-            Utils.InputSplatData[] data = new Utils.InputSplatData[gpuData.count];
+            GaussianSplatAssetCreator.InputSplatData[] data = new GaussianSplatAssetCreator.InputSplatData[gpuData.count];
             gpuData.GetData(data);
 
             var gpuDeleted = gs.GpuEditDeleted;

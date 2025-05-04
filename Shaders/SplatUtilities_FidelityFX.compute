@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-#define GROUP_SIZE 1024
+#define GROUP_SIZE 32
 
 #pragma kernel CSSetIndices
 #pragma kernel CSCalcDistances
@@ -17,29 +17,27 @@
 #pragma kernel CSExportData
 #pragma kernel CSCopySplats
 
-// DeviceRadixSort
-#pragma multi_compile __ KEY_UINT KEY_INT KEY_FLOAT
-#pragma multi_compile __ PAYLOAD_UINT PAYLOAD_INT PAYLOAD_FLOAT
-#pragma multi_compile __ SHOULD_ASCEND
-#pragma multi_compile __ SORT_PAIRS
-#pragma multi_compile __ VULKAN
-#pragma kernel InitDeviceRadixSort
-#pragma kernel Upsweep
-#pragma kernel Scan
-#pragma kernel Downsweep
+// FidelityFX GPU sorting
+#pragma kernel FfxParallelSortReduce
+#pragma kernel FfxParallelSortScanAdd
+#pragma kernel FfxParallelSortScan
+#pragma kernel FfxParallelSortScatter
+#pragma kernel FfxParallelSortCount
 
 // GPU sorting needs wave ops
 #pragma require wavebasic
-#pragma require waveballot
+
 #pragma use_dxc
 
-#include "DeviceRadixSort.hlsl"
+#include "GpuSortFidelityFX.hlsl"
 #include "GaussianSplatting.hlsl"
 #include "UnityCG.cginc"
 
 float4x4 _MatrixObjectToWorld;
 float4x4 _MatrixWorldToObject;
+float4x4 _MatrixVP;
 float4x4 _MatrixMV;
+float4x4 _MatrixP;
 float4 _VecScreenParams;
 float4 _VecWorldSpaceCameraPos;
 int _SelectionMode;
@@ -97,6 +95,7 @@ struct GaussianCutoutShaderData // match GaussianCutout.ShaderData in C#
 {
     float4x4 mat;
     uint typeAndFlags;
+    int cutIndices[8];
 };
 StructuredBuffer<GaussianCutoutShaderData> _SplatCutouts;
 
@@ -161,6 +160,57 @@ void DecomposeCovariance(float3 cov2d, out float2 v1, out float2 v2)
     #endif
 }
 
+bool IncludedInLayers(int cutRanges[], const int idx)
+{
+    bool included = false;
+    included = included || (idx >= cutRanges[0] && idx < cutRanges[1]);
+    included = included || (idx >= cutRanges[2] && idx < cutRanges[3]);
+    included = included || (idx >= cutRanges[4] && idx < cutRanges[5]);
+    included = included || (idx >= cutRanges[6] && idx < cutRanges[7]);
+    return included;
+}
+
+
+
+bool IsSplatCutAtLayer(float3 pos, const int idx)
+{
+    bool finalCut = false;
+    for (uint i = 0; i < _SplatCutoutsCount; ++i)
+    {
+        GaussianCutoutShaderData cutData = _SplatCutouts[i];
+        uint type = cutData.typeAndFlags & 0xFF;
+        if (type == 0xFF) // invalid/null cutout, ignore
+            continue;
+
+        bool included = false;
+        included = included || (idx >= cutData.cutIndices[0] && idx < cutData.cutIndices[1]);
+        included = included || (idx >= cutData.cutIndices[2] && idx < cutData.cutIndices[3]);
+        included = included || (idx >= cutData.cutIndices[4] && idx < cutData.cutIndices[5]);
+        included = included || (idx >= cutData.cutIndices[6] && idx < cutData.cutIndices[7]);
+
+        if (idx >= 0 && !included) continue;
+        
+        bool invert = (cutData.typeAndFlags & 0xFF00) != 0;
+
+        float3 cutoutPos = mul(cutData.mat, float4(pos, 1)).xyz;
+        if (type == SPLAT_CUTOUT_TYPE_ELLIPSOID)
+        {
+            if (dot(cutoutPos, cutoutPos) <= 1) return invert;
+        }
+        if (type == SPLAT_CUTOUT_TYPE_BOX)
+        {
+            if (all(abs(cutoutPos) <= 1)) return invert;
+        }
+        finalCut |= !invert;
+    }
+    return finalCut;
+}
+/*
+bool IsSplatCut(float3 pos) { return false;IsSplatCutAtLayer(pos, -1);}
+*/
+
+
+
 bool IsSplatCut(float3 pos)
 {
     bool finalCut = false;
@@ -196,7 +246,8 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
     SplatData splat = LoadSplatData(idx);
     SplatViewData view = (SplatViewData)0;
     
-    float3 centerWorldPos = mul(_MatrixObjectToWorld, float4(splat.pos,1)).xyz;
+    float3 centerWorldPos = mul(_MatrixObjectToWorld, float4(splat.pos, 1)).xyz;
+    //float4 centerClipPos = mul(_MatrixVP, float4(centerWorldPos, 1));
     float4 centerClipPos = mul(UNITY_MATRIX_VP, float4(centerWorldPos, 1));
     half opacityScale = _SplatOpacityScale;
     float splatScale = _SplatScale;
@@ -214,7 +265,7 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
     }
 
     // cutouts
-    if (IsSplatCut(splat.pos))
+    if (IsSplatCutAtLayer(splat.pos, idx))
     {
         centerClipPos.w = 0;
     }
@@ -233,8 +284,9 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
         float splatScale2 = splatScale * splatScale;
         cov3d0 *= splatScale2;
         cov3d1 *= splatScale2;
+        //float3 cov2d = CalcCovariance2D(splat.pos, cov3d0, cov3d1, _MatrixMV, _MatrixP, _VecScreenParams);
         float3 cov2d = CalcCovariance2D(splat.pos, cov3d0, cov3d1, _MatrixMV, UNITY_MATRIX_P, _VecScreenParams);
-        
+
         DecomposeCovariance(cov2d, view.axis1, view.axis2);
 
         float3 worldViewDir = _VecWorldSpaceCameraPos.xyz - centerWorldPos;
@@ -402,8 +454,9 @@ void CSSelectionUpdate (uint3 id : SV_DispatchThreadID)
         return;
 
     float3 centerWorldPos = mul(_MatrixObjectToWorld, float4(pos,1)).xyz;
+    //float4 centerClipPos = mul(_MatrixVP, float4(centerWorldPos, 1));
     float4 centerClipPos = mul(UNITY_MATRIX_VP, float4(centerWorldPos, 1));
-    centerClipPos.y *= -1;
+
     bool behindCam = centerClipPos.w <= 0;
     if (behindCam)
         return;

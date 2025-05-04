@@ -29,11 +29,11 @@
 #define US_DIM          128U        //The number of threads in a Upsweep threadblock
 #define SCAN_DIM        128U        //The number of threads in a Scan threadblock
 
-RWStructuredBuffer<uint> b_globalHist;  //buffer holding device level offsets for each binning pass
-RWStructuredBuffer<uint> b_passHist;    //buffer used to store reduced sums of partition tiles
+RWStructuredBuffer<uint> b_globalHist; //buffer holding device level offsets for each binning pass
+RWStructuredBuffer<uint> b_passHist; //buffer used to store reduced sums of partition tiles
 
-groupshared uint g_us[RADIX * 2];   //Shared memory for upsweep
-groupshared uint g_scan[SCAN_DIM];  //Shared memory for the scan
+groupshared uint g_us[RADIX * 2]; //Shared memory for upsweep
+groupshared uint g_scan[SCAN_DIM]; //Shared memory for the scan
 
 //*****************************************************************************
 //INIT KERNEL
