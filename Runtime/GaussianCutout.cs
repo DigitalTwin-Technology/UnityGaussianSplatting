@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 
-using System;
 using System.Linq;
 using UnityEditor;
 using UnityEngine;
@@ -17,50 +16,26 @@ namespace GaussianSplatting.Runtime
 
         public Type m_Type = Type.Ellipsoid;
         public bool m_Invert = false;
-        public bool[] layersToCut = Array.Empty<bool>();
 
-        public unsafe struct ShaderData // match GaussianCutoutShaderData in CS
+        public struct ShaderData // match GaussianCutoutShaderData in CS
         {
             public Matrix4x4 matrix;
             public uint typeAndFlags;
-            public fixed int cutIndices[8]; // Four layers max right now
         }
-        
-        public static ShaderData GetShaderData(GaussianCutout self, Matrix4x4 rendererMatrix, GaussianSplatAsset asset)
+
+        public static ShaderData GetShaderData(GaussianCutout self, Matrix4x4 rendererMatrix)
         {
             ShaderData sd = default;
-            if (!(self && self.isActiveAndEnabled))
+            if (self && self.isActiveAndEnabled)
+            {
+                var tr = self.transform;
+                sd.matrix = tr.worldToLocalMatrix * rendererMatrix;
+                sd.typeAndFlags = ((uint)self.m_Type) | (self.m_Invert ? 0x100u : 0u);
+            }
+            else
             {
                 sd.typeAndFlags = ~0u;
-                return sd;
             }
-
-            unsafe // Initialize cut data to invalid value
-            {
-                for (int i = 0; i < 8; i++)
-                {
-                    sd.cutIndices[i] = -1;
-                }
-            }
-            
-            var tr = self.transform;
-            sd.matrix = tr.worldToLocalMatrix * rendererMatrix;
-            sd.typeAndFlags = ((uint)self.m_Type) | (self.m_Invert ? 0x100u : 0u);
-            
-            // Doing this every frame is not very performant, should only run when properties change
-            for (int layer = 0; layer < Math.Min(4, self.layersToCut.Length); layer++)
-            {
-                if (self.layersToCut[layer] && asset.layerInfo.TryGetValue(layer, out int count))
-                {
-                    int idxFrom = asset.layerInfo.Where(kv => kv.Key < layer).Sum(kv => kv.Value);
-                    unsafe
-                    {
-                        sd.cutIndices[layer * 2] = idxFrom;
-                        sd.cutIndices[layer * 2 + 1] = idxFrom + count;
-                    }
-                }
-            }
-
             return sd;
         }
 

@@ -46,11 +46,11 @@ namespace GaussianSplatting.Editor
             EditorGUILayout.IntField("Version", gs.formatVersion);
             GUI.backgroundColor = prevBackColor;
 
-            long sizePos = gs.posDataSize;
-            long sizeOther = gs.otherDataSize;
-            long sizeCol = gs.colorDataSize;
-            long sizeSH = gs.shDataSize;
-            long sizeChunk = gs.chunkDataSize;
+            long sizePos = gs.posData != null ? gs.posData.dataSize : 0;
+            long sizeOther = gs.otherData != null ? gs.otherData.dataSize : 0;
+            long sizeCol = gs.colorData != null ? gs.colorData.dataSize : 0;
+            long sizeSH = GaussianSplatAsset.CalcSHDataSize(gs.splatCount, gs.shFormat);
+            long sizeChunk = gs.chunkData != null ? gs.chunkData.dataSize : 0;
 
             EditorGUILayout.TextField("Memory", EditorUtility.FormatBytes(sizePos + sizeOther + sizeSH + sizeCol + sizeChunk));
             EditorGUI.indentLevel++;
@@ -65,19 +65,6 @@ namespace GaussianSplatting.Editor
             EditorGUILayout.Vector3Field("Bounds Min", gs.boundsMin);
             EditorGUILayout.Vector3Field("Bounds Max", gs.boundsMax);
 
-            EditorGUILayout.Space();
-            GUILayout.Label("Layers", EditorStyles.boldLabel);
-            foreach (var kv in gs.layerInfo)
-            {
-                EditorGUILayout.BeginHorizontal();
-                GUILayout.Label("Layer");
-                EditorGUILayout.FloatField(kv.Key);
-                GUILayout.Label("Splat Count");
-                EditorGUILayout.FloatField(kv.Value);
-                EditorGUILayout.EndHorizontal();
-            }
-            
-            EditorGUILayout.Space();
             EditorGUILayout.TextField("Data Hash", gs.dataHash.ToString());
         }
     }

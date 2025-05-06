@@ -1,20 +1,16 @@
 // SPDX-License-Identifier: MIT
 
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
-using UnityEditor;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
-using UnityEngine.Serialization;
 
 namespace GaussianSplatting.Runtime
 {
     public class GaussianSplatAsset : ScriptableObject
     {
-        public const int kCurrentVersion = 2024_08_01;
+        public const int kCurrentVersion = 2023_10_20;
         public const int kChunkSize = 256;
         public const int kTextureWidth = 2048; // allows up to 32M splats on desktop GPU (2k width x 16k height)
         public const int kMaxSplats = 8_600_000; // mostly due to 2GB GPU buffer size limit when exporting a splat (2GB / 248B is just over 8.6M)
@@ -25,18 +21,11 @@ namespace GaussianSplatting.Runtime
         [SerializeField] Vector3 m_BoundsMax;
         [SerializeField] Hash128 m_DataHash;
 
-        // Cmon Unity give me serialized dictionaries
-        [SerializeField] List<int2> m_LayerInfo;
-            
         public int formatVersion => m_FormatVersion;
         public int splatCount => m_SplatCount;
         public Vector3 boundsMin => m_BoundsMin;
         public Vector3 boundsMax => m_BoundsMax;
         public Hash128 dataHash => m_DataHash;
-
-        
-        // Layers and splats per layer
-        public IReadOnlyDictionary<int, int> layerInfo => m_LayerInfo.ToDictionary(i => i.x, i => i.y);
 
         // Match VECTOR_FMT_* in HLSL
         public enum VectorFormat
@@ -111,8 +100,7 @@ namespace GaussianSplatting.Runtime
             public ushort shPadding; // pad to multiple of 4 bytes
         }
 
-        public void Initialize(int splats, VectorFormat formatPos, VectorFormat formatScale, ColorFormat formatColor, 
-            SHFormat formatSh, Vector3 bMin, Vector3 bMax, CameraInfo[] cameraInfos, IEnumerable<int2> layers)
+        public void Initialize(int splats, VectorFormat formatPos, VectorFormat formatScale, ColorFormat formatColor, SHFormat formatSh, Vector3 bMin, Vector3 bMax, CameraInfo[] cameraInfos)
         {
             m_SplatCount = splats;
             m_FormatVersion = kCurrentVersion;
@@ -123,7 +111,6 @@ namespace GaussianSplatting.Runtime
             m_Cameras = cameraInfos;
             m_BoundsMin = bMin;
             m_BoundsMax = bMax;
-            m_LayerInfo = new List<int2>(layers);
         }
 
         public void SetDataHash(Hash128 hash)
@@ -131,23 +118,13 @@ namespace GaussianSplatting.Runtime
             m_DataHash = hash;
         }
 
-        public void SetClusteredSHAssetFile(TextAsset clusteredSH)
+        public void SetAssetFiles(TextAsset dataChunk, TextAsset dataPos, TextAsset dataOther, TextAsset dataColor, TextAsset dataSh)
         {
-            m_clusteredSHData = clusteredSH;
-        }
-
-        public void SetAssetFiles(byte layer, TextAsset dataChunk, TextAsset dataPos, TextAsset dataOther, TextAsset dataColor, TextAsset dataSh)
-        {
-            var data = new LayerAssets()
-            {
-                layer = layer,
-                m_ChunkData = dataChunk,
-                m_PosData = dataPos,
-                m_OtherData = dataOther,
-                m_ColorData = dataColor,
-                m_SHData = dataSh,
-            };
-            m_layerData.Add(data);
+            m_ChunkData = dataChunk;
+            m_PosData = dataPos;
+            m_OtherData = dataOther;
+            m_ColorData = dataColor;
+            m_SHData = dataSh;
         }
 
         public static int GetOtherSizeNoSHIndex(VectorFormat scaleFormat)
@@ -210,7 +187,6 @@ namespace GaussianSplatting.Runtime
         public static long CalcSHDataSize(int splatCount, SHFormat formatSh)
         {
             int shCount = GetSHCount(formatSh, splatCount);
-
             return formatSh switch
             {
                 SHFormat.Float32 => shCount * UnsafeUtility.SizeOf<SHTableItemFloat32>(),
@@ -231,21 +207,13 @@ namespace GaussianSplatting.Runtime
         [SerializeField] SHFormat m_SHFormat = SHFormat.Norm11;
         [SerializeField] ColorFormat m_ColorFormat;
 
-        [Serializable]
-        public struct LayerAssets
-        {
-            [SerializeField] public byte layer;
-            [SerializeField] public TextAsset m_PosData;
-            [SerializeField] public TextAsset m_ColorData;
-            [SerializeField] public TextAsset m_OtherData;
-            // SH data is optional, if we use clustering we save once per asset not per layer
-            [SerializeField] public TextAsset m_SHData;
-            // Chunk data is optional (if data formats are fully lossless then there's no chunking)
-            [SerializeField] public TextAsset m_ChunkData;
-        }
+        [SerializeField] TextAsset m_PosData;
+        [SerializeField] TextAsset m_ColorData;
+        [SerializeField] TextAsset m_OtherData;
+        [SerializeField] TextAsset m_SHData;
+        // Chunk data is optional (if data formats are fully lossless then there's no chunking)
+        [SerializeField] TextAsset m_ChunkData;
 
-        [SerializeField] private TextAsset m_clusteredSHData;
-        [SerializeField] private List<LayerAssets> m_layerData = new(); 
         [SerializeField] CameraInfo[] m_Cameras;
 
         public VectorFormat posFormat => m_PosFormat;
@@ -253,14 +221,11 @@ namespace GaussianSplatting.Runtime
         public SHFormat shFormat => m_SHFormat;
         public ColorFormat colorFormat => m_ColorFormat;
 
-
-        public List<LayerAssets> LayerData => m_layerData;
-        public TextAsset ClusteredSHData => m_clusteredSHData;
-        public long posDataSize => m_layerData.Sum(layer => layer.m_PosData.dataSize);
-        public long colorDataSize => m_layerData.Sum(layer => layer.m_ColorData.dataSize);
-        public long otherDataSize => m_layerData.Sum(layer => layer.m_OtherData.dataSize);
-        public long shDataSize => m_clusteredSHData != null ? m_clusteredSHData.dataSize : m_layerData.Sum(layer => layer.m_SHData.dataSize);
-        public long chunkDataSize => m_layerData.Sum(layer => layer.m_ChunkData != null ? layer.m_ChunkData.dataSize : 0);
+        public TextAsset posData => m_PosData;
+        public TextAsset colorData => m_ColorData;
+        public TextAsset otherData => m_OtherData;
+        public TextAsset shData => m_SHData;
+        public TextAsset chunkData => m_ChunkData;
         public CameraInfo[] cameras => m_Cameras;
 
         public struct ChunkInfo

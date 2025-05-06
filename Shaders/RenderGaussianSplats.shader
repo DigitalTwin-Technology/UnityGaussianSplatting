@@ -17,7 +17,6 @@ CGPROGRAM
 #pragma require compute
 #pragma use_dxc
 
-#include "UnityCG.cginc"
 #include "GaussianSplatting.hlsl"
 
 StructuredBuffer<uint> _OrderBuffer;
@@ -32,24 +31,16 @@ struct v2f
 StructuredBuffer<SplatViewData> _SplatViewData;
 ByteAddressBuffer _SplatSelectedBits;
 uint _SplatBitsValid;
-uint _OptimizeForQuest;
-
+uint _EyeIndex;
+uint _IsStereo;
 v2f vert (uint vtxID : SV_VertexID, uint instID : SV_InstanceID)
 {
-	v2f o = (v2f)0;
+    v2f o = (v2f)0;
     instID = _OrderBuffer[instID];
-
-	SplatViewData view = _SplatViewData[instID];
-
+    uint eyeIndex = _EyeIndex;
+    uint viewIndex = _IsStereo ? instID * 2 + eyeIndex : instID;
+	SplatViewData view = _SplatViewData[viewIndex];
 	float4 centerClipPos = view.pos;
-
-	// Need to recalculate here for Quest (Why tho?)
-	if (_OptimizeForQuest) {
-		SplatData splat = LoadSplatData(instID);
-		float3 centerWorldPos = mul(unity_ObjectToWorld, float4(splat.pos, 1)).xyz;
-	    centerClipPos = mul(UNITY_MATRIX_VP, float4(centerWorldPos, 1));;
-	}
-
 	bool behindCam = centerClipPos.w <= 0;
 	if (behindCam)
 	{
@@ -84,6 +75,7 @@ v2f vert (uint vtxID : SV_VertexID, uint instID : SV_InstanceID)
 			}
 		}
 	}
+	FlipProjectionIfBackbuffer(o.vertex);
     return o;
 }
 
@@ -117,7 +109,6 @@ half4 frag (v2f i) : SV_Target
     half4 res = half4(i.col.rgb * alpha, alpha);
     return res;
 }
-
 ENDCG
         }
     }
